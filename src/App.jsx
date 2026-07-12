@@ -508,7 +508,7 @@ function parseLayoutText(text) {
 }
 
 // ============== 格式範本（貼給設計牌陣的 AI，輸出可被 parser 直接解析） ==============
-const FORMAT_TEMPLATE = `請將設計好的牌陣按以下格式輸出（我會貼到抽牌工具自動解析）：
+const FORMAT_TEMPLATE = `請將設計好的牌陣按以下格式輸出，並把整段內容放進同一個 code block（用 \`\`\` 圍住）——我要一鍵複製、貼到抽牌工具自動解析，所以表格請保持純文字格式，不要渲染成排版表格：
 
 牌陣名：（牌陣名稱，可附張數如（5張））
 
@@ -525,7 +525,7 @@ const FORMAT_TEMPLATE = `請將設計好的牌陣按以下格式輸出（我會�
 - （特性一）
 - （特性二）
 
-如有空間結構，另附 ASCII 示意圖（用 ┌ ─ │ 等框線字元）。`;
+如有空間結構，請在同一個 code block 內用 ┌ ─ │ 等框線字元附上 ASCII 示意圖。`;
 
 // ============== 剪貼簿（clipboard API 失敗時退回 execCommand） ==============
 function legacyCopy(text) {
