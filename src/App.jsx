@@ -247,11 +247,22 @@ function parseLayoutText(text) {
   }
 
   // === 1. 牌陣名 ===
-  const nameByKeyword = text.match(
-    /^[\s#>*]*[A-Za-z0-9]*[\.\)、]?\s*([^\n]*牌陣[^\n（()]*?)\s*(?:[（(]\s*\d+\s*張?\s*[)）])?\s*$/m
-  );
-  if (nameByKeyword) {
-    result.layoutName = nameByKeyword[1].trim().replace(/^[#\s]+/, "");
+  // 「牌陣名：XXX」標籤格式優先（格式範本第一行），含「牌陣」關鍵字的整行判斷當 fallback
+  const nameByLabel = text.match(/(?:^|\n)[\s#>*-]*牌陣名\s*[:：]\s*([^\n]+)/);
+  if (nameByLabel) {
+    result.layoutName = nameByLabel[1]
+      .trim()
+      .replace(/[（(]\s*\d+\s*張?\s*[)）]\s*$/, "")
+      .replace(/^[「『]+/, "")
+      .replace(/[」』]+$/, "")
+      .trim();
+  } else {
+    const nameByKeyword = text.match(
+      /^[\s#>*]*[A-Za-z0-9]*[\.\)、]?\s*([^\n]*牌陣[^\n（()]*?)\s*(?:[（(]\s*\d+\s*張?\s*[)）])?\s*$/m
+    );
+    if (nameByKeyword) {
+      result.layoutName = nameByKeyword[1].trim().replace(/^[#\s]+/, "");
+    }
   }
 
   // === 2. 默念問句 ===
@@ -485,11 +496,63 @@ function parseLayoutText(text) {
   } else {
     result.diagnostics.push(`抓到 ${result.positions.length} 個位置`);
   }
-  if (!result.layoutName) result.diagnostics.push("未抓到牌陣名");
+  if (result.layoutName) {
+    result.diagnostics.push(`牌陣名：${result.layoutName}`);
+  } else {
+    result.diagnostics.push("未抓到牌陣名");
+  }
   if (!result.question) result.diagnostics.push("未抓到問句");
   if (result.layoutDiagram) result.diagnostics.push("已擷取牌陣示意圖");
 
   return result;
+}
+
+// ============== 格式範本（貼給設計牌陣的 AI，輸出可被 parser 直接解析） ==============
+const FORMAT_TEMPLATE = `請將設計好的牌陣按以下格式輸出，並把整段內容放進同一個 code block（用 \`\`\` 圍住）——我要一鍵複製、貼到抽牌工具自動解析，所以表格請保持純文字格式，不要渲染成排版表格：
+
+牌陣名：（牌陣名稱，可附張數如（5張））
+
+默念問句：
+「（完整問句）」
+
+牌陣位置：
+| # | 位置 | 意義 |
+|---|------|------|
+| 1 | 位置名 | 這個位置代表什麼 |
+| 2 | 位置名 | 這個位置代表什麼 |
+
+這個牌陣會給你什麼：
+- （特性一）
+- （特性二）
+
+如有空間結構，請在同一個 code block 內用 ┌ ─ │ 等框線字元附上 ASCII 示意圖。`;
+
+// ============== 剪貼簿（clipboard API 失敗時退回 execCommand） ==============
+function legacyCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  ta.remove();
+  return ok;
+}
+
+function copyText(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(
+      () => true,
+      () => legacyCopy(text)
+    );
+  }
+  return Promise.resolve(legacyCopy(text));
 }
 
 // ============== 設計 token ==============
@@ -731,7 +794,7 @@ export default function TarotApp() {
   const [pasteText, setPasteText] = useState("");
   const [parseResult, setParseResult] = useState(null);
   const [pasteOpen, setPasteOpen] = useState(true);
-  const [isAiParsing, setIsAiParsing] = useState(false);
+  const [tplCopyStatus, setTplCopyStatus] = useState("");
 
   const [drawnCards, setDrawnCards] = useState([]);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -771,24 +834,10 @@ export default function TarotApp() {
     setDrawnCards([]);
   };
 
-  const handleAiParse = async () => {
-    if (!pasteText.trim() || isAiParsing) return;
-    // ⚠️ Artifact runtime 的 claudeusercontent.com proxy 會擋
-    // fetch api.anthropic.com 的請求（回 "Invalid response format"），
-    // 所以這個功能在 artifact 環境無法啟用。
-    //
-    // 搬到 Claude Code 做成 web app 時，啟用步驟：
-    // 1. 把 _aiParseImpl 函數內容（檔尾註解）解註解
-    // 2. 將 fetch endpoint 改為 Gemini API（或自家後端代理 Anthropic）
-    // 3. key 用環境變數，不要 hard-code 在前端
-    setParseResult({
-      diagnostics: [
-        "AI 解析此 artifact 環境暫不支援",
-        "原因：runtime proxy 擋了外部 API call",
-        "短期：把 paste 內容貼到對話請 Claude 結構化後貼回",
-        "長期：搬到 Claude Code 接 Gemini API 啟用",
-      ],
-      info: true,
+  const handleCopyTemplate = () => {
+    copyText(FORMAT_TEMPLATE).then((ok) => {
+      setTplCopyStatus(ok ? "已複製，貼給設計牌陣的 AI" : "複製失敗");
+      setTimeout(() => setTplCopyStatus(""), 2500);
     });
   };
 
@@ -896,18 +945,10 @@ export default function TarotApp() {
     lines.push(instructions || "（未填）");
     const text = lines.join("\n");
 
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(
-        () => {
-          setCopyStatus("已複製到剪貼簿");
-          setTimeout(() => setCopyStatus(""), 2500);
-        },
-        () => {
-          setCopyStatus("複製失敗");
-          setTimeout(() => setCopyStatus(""), 2500);
-        }
-      );
-    }
+    copyText(text).then((ok) => {
+      setCopyStatus(ok ? "已複製到剪貼簿" : "複製失敗");
+      setTimeout(() => setCopyStatus(""), 2500);
+    });
   };
 
   // ===== 樣式 =====
@@ -1075,20 +1116,21 @@ export default function TarotApp() {
                     onChange={(e) => setPasteText(e.target.value)}
                     placeholder={`把 AI 設計的牌陣整段貼進來，例如：
 
-A. 動機三角牌陣（3張）
+牌陣名：解結（3張）
 
 默念問句：
-「allen 當初在跟我相處時，他的內在動機、外在壓力、與真實渴望是什麼？」
+「這件事推不動，真正卡住的是什麼？」
 
 牌陣位置：
 | # | 位置 | 意義 |
-| 1 | 內在動機 | 他內心驅動行為的核心原因 |
-| 2 | 外在壓力 | 環境、現實、其他人對他的期待 |
-| 3 | 真實渴望 | 他真正想要的（可能跟動機不同）|
+|---|------|------|
+| 1 | 表面卡點 | 看得見的阻礙、大家以為的原因 |
+| 2 | 底層癥結 | 檯面下真正卡住的東西 |
+| 3 | 鬆動之鑰 | 能讓局面開始移動的第一步 |
 
 這個牌陣會給你什麼：
-• 純粹聚焦在「他當時的狀態」
-• 三張牌之間的張力會說話`}
+- 聚焦單一問題往下挖，不看時間線
+- 第 2 張與第 1 張的落差就是盲點所在`}
                     rows={8}
                     style={{
                       ...inputStyle,
@@ -1107,7 +1149,7 @@ A. 動機三角牌陣（3張）
                   >
                     <button
                       onClick={handleParseAndApply}
-                      disabled={!pasteText.trim() || isAiParsing}
+                      disabled={!pasteText.trim()}
                       style={{
                         ...chipBase,
                         background: C.accent,
@@ -1115,18 +1157,14 @@ A. 動機三角牌陣（3張）
                         border: "none",
                         padding: "8px 14px",
                         fontWeight: 600,
-                        opacity: pasteText.trim() && !isAiParsing ? 1 : 0.4,
-                        cursor:
-                          pasteText.trim() && !isAiParsing
-                            ? "pointer"
-                            : "not-allowed",
+                        opacity: pasteText.trim() ? 1 : 0.4,
+                        cursor: pasteText.trim() ? "pointer" : "not-allowed",
                       }}
                     >
                       ⟶ 解析填入
                     </button>
                     <button
-                      onClick={handleAiParse}
-                      disabled={!pasteText.trim() || isAiParsing}
+                      onClick={handleCopyTemplate}
                       style={{
                         ...chipBase,
                         background: C.ink,
@@ -1134,22 +1172,26 @@ A. 動機三角牌陣（3張）
                         border: "none",
                         padding: "8px 14px",
                         fontWeight: 600,
-                        opacity: pasteText.trim() && !isAiParsing ? 1 : 0.4,
-                        cursor:
-                          pasteText.trim() && !isAiParsing
-                            ? "pointer"
-                            : "wait",
                       }}
                     >
-                      {isAiParsing ? "AI 解析中…" : "✨ AI 解析"}
+                      📋 複製格式範本
                     </button>
-                    <button
-                      onClick={clearPaste}
-                      style={chipBase}
-                      disabled={isAiParsing}
-                    >
+                    <button onClick={clearPaste} style={chipBase}>
                       清空
                     </button>
+                    {tplCopyStatus && (
+                      <span
+                        style={{
+                          fontFamily: FONT_MONO,
+                          fontSize: 11,
+                          color: C.accent,
+                          letterSpacing: "0.1em",
+                          alignSelf: "center",
+                        }}
+                      >
+                        ✓ {tplCopyStatus}
+                      </span>
+                    )}
                   </div>
 
                   {parseResult && (
@@ -1168,33 +1210,17 @@ A. 動機三角牌陣（3張）
                       {parseResult.diagnostics.map((d, i) => {
                         const ok =
                           d.startsWith("抓到") ||
-                          d.startsWith("AI 抓到") ||
                           d.startsWith("已抓到") ||
                           d.startsWith("已擷取") ||
                           d.startsWith("從示意圖抓到") ||
                           d.startsWith("牌陣名：");
-                        const bad =
-                          d.includes("失敗") || d.startsWith("AI 解析失敗");
-                        const pending = d.includes("解析中");
-                        const info = parseResult.info;
+                        const bad = d.includes("失敗");
                         const color = bad
                           ? "#d97a6c"
-                          : pending
-                          ? "#d4b35e"
                           : ok
                           ? "#a8c896"
-                          : info
-                          ? "#7fa8c4"
                           : C.inkMuted;
-                        const mark = bad
-                          ? "✗"
-                          : pending
-                          ? "…"
-                          : ok
-                          ? "✓"
-                          : info
-                          ? "ⓘ"
-                          : "·";
+                        const mark = bad ? "✗" : ok ? "✓" : "·";
                         return (
                           <div key={i} style={{ color }}>
                             {mark} {d}
@@ -1608,7 +1634,7 @@ A. 動機三角牌陣（3張）
             gap: 8,
           }}
         >
-          <span>private use · v0.5 · AI parsing (standby)</span>
+          <span>private use · v0.6</span>
           <span>78 + 36 cards · entropy: system</span>
         </footer>
       </div>
