@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 // ============== 牌組資料 ==============
 const majorArcana = [
@@ -800,6 +800,10 @@ export default function TarotApp() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
 
+  const pasteRef = useRef(null);
+  // 每次抽牌／清空都遞增，讓清空時尚未完成的抽牌動畫不會再把牌補回來
+  const drawSessionRef = useRef(0);
+
   const changeDeckScope = (newScope) => {
     setDeckScope(newScope);
     // 雷諾曼傳統不分正逆位，塔羅傳統使用正逆位
@@ -841,9 +845,23 @@ export default function TarotApp() {
     });
   };
 
-  const clearPaste = () => {
+  // 一鍵清空：所有輸入與抽牌結果回到空白，方便直接貼下一個問題
+  const clearAll = () => {
+    drawSessionRef.current += 1;
     setPasteText("");
     setParseResult(null);
+    setTplCopyStatus("");
+    setLayoutName("");
+    setQuestion("");
+    setPositions([{ name: "", meaning: "" }]);
+    setLayoutMeta("");
+    setLayoutDiagram("");
+    setInstructions("");
+    setDrawnCards([]);
+    setIsDrawing(false);
+    setCopyStatus("");
+    setPasteOpen(true);
+    setTimeout(() => pasteRef.current?.focus(), 0);
   };
 
   const addPosition = () => {
@@ -880,6 +898,7 @@ export default function TarotApp() {
     }
     setIsDrawing(true);
     setDrawnCards([]);
+    const session = ++drawSessionRef.current;
     const shuffled = fisherYatesShuffle(pool);
     const drawn = shuffled.slice(0, positions.length).map((card, i) => ({
       ...card,
@@ -890,6 +909,7 @@ export default function TarotApp() {
     }));
     drawn.forEach((card, i) => {
       setTimeout(() => {
+        if (session !== drawSessionRef.current) return;
         setDrawnCards((prev) => [...prev, card]);
         if (i === drawn.length - 1) setIsDrawing(false);
       }, 220 * (i + 1));
@@ -1112,6 +1132,7 @@ export default function TarotApp() {
               {pasteOpen && (
                 <>
                   <textarea
+                    ref={pasteRef}
                     value={pasteText}
                     onChange={(e) => setPasteText(e.target.value)}
                     placeholder={`把 AI 設計的牌陣整段貼進來，例如：
@@ -1176,8 +1197,12 @@ export default function TarotApp() {
                     >
                       📋 複製格式範本
                     </button>
-                    <button onClick={clearPaste} style={chipBase}>
-                      清空
+                    <button
+                      onClick={clearAll}
+                      style={chipBase}
+                      title="清空所有欄位與抽牌結果，重新開始"
+                    >
+                      全部清空
                     </button>
                     {tplCopyStatus && (
                       <span
